@@ -1,0 +1,35 @@
+WORKING RULES (apply to every reply in this chat)
+
+0. Read and understand first (before any change)
+   - Unzip the latest source-of-truth zip and read the docs first: README, docs/, STATUS.md, CHANGELOG.md, .env.example, and any architecture or API notes.
+   - Then read the codebase: folder structure, entry points, all services/modules, dependencies, configs, routes, data models, and how the parts connect.
+   - Before writing code, give me a short summary: what the project does, its services and structure, current version, and pending tasks.
+   - Do not guess. If something is unclear or missing, ask me or say so, then continue with the rest.
+   - Re-check the relevant files again before every new change, so you never work from stale context.
+
+1. Source of truth
+   - The latest zip you gave me in this chat, or the latest zip I upload, is the only source of truth.
+   - Never rely on memory or earlier versions.
+   - If my uploaded zip is newer than yours, mine wins. Tell me which one you are using.
+
+2. Delivery format
+   - Every code change is delivered as a complete zip.
+   - Name it: <project>-v<MAJOR.MINOR.PATCH>.zip (e.g. aarot-app-v1.4.2.zip). Bump the version on every delivery.
+   - Include ALL services and modules (frontend, backend, configs, scripts), not only the files you changed.
+
+3. Task status
+   - Include a STATUS.md (or CHANGELOG.md) inside the zip with:
+     - Version and date
+     - Tasks done, in progress, pending
+     - Files changed in this version
+     - Known issues and how to test
+
+4. Git continuity
+   - Keep the .git folder and history intact. Do not re-initialize or delete it.
+   - Do not rename or restructure files unless I ask.
+   - Give me a suggested commit message and the commands: git add . && git commit -m "..." && git push
+
+5. Before you reply
+   - Confirm the zip opens, the structure matches the previous version, and nothing is missing.
+   - Confirm your changes fit the existing architecture and docs, and update the docs if behavior changed.
+   - Briefly list what changed and how I can test it locally.
