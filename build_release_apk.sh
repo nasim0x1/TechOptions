@@ -4,16 +4,18 @@
 # and Deploy to <root>/TechOptions (Single-commit release, no bloated git history)
 #
 # Usage:
-#   ./build_release_apk.sh                     # Build both Kids & Parents and deploy
-#   ./build_release_apk.sh all                 # Same as above
-#   ./build_release_apk.sh kids                # Build only Kids app (Android)
-#   ./build_release_apk.sh parents             # Build only Parents app (Flutter)
-#   ./build_release_apk.sh --no-push           # Build both, copy to TechOptions, skip git push
-#   ./build_release_apk.sh kids --no-push      # Build only Kids app without git push
+#   ./build_release_apk.sh                     # Interactive mode: asks target app and build only vs release
+#   ./build_release_apk.sh build               # Build all apps locally (TechOptions untouched)
+#   ./build_release_apk.sh kids build          # Build only Kids app locally
+#   ./build_release_apk.sh parents build       # Build only Parents app locally
+#   ./build_release_apk.sh release             # Official release: auto-bump, stage to TechOptions & push
+#   ./build_release_apk.sh release --no-push   # Release locally: auto-bump & stage to TechOptions, skip push
+#   ./build_release_apk.sh all --stage         # Build all apps and stage to TechOptions locally (no push)
 # ==============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
 # Resolve workspace root and project directories
 if [[ -d "$SCRIPT_DIR/angan/angan-kids-android" ]]; then
@@ -30,16 +32,49 @@ KIDS_APP_DIR="$WORKSPACE_ROOT/angan/angan-kids-android"
 PARENTS_APP_DIR="$WORKSPACE_ROOT/angan/angan-app"
 TECHOPTIONS_DIR="$WORKSPACE_ROOT/TechOptions"
 
-# Parse CLI arguments
-TARGET_APP="all"
+# Helper function to read input safely in interactive and non-interactive shells
+ask_prompt() {
+  local prompt_text="$1"
+  local default_value="$2"
+  local result_var="$3"
+  local user_input=""
+
+  if [[ "$NON_INTERACTIVE" == "true" ]]; then
+    eval "$result_var=\"$default_value\""
+    return
+  fi
+
+  if read -r -p "$prompt_text" user_input; then
+    user_input="$(echo "$user_input" | xargs)"
+  else
+    user_input=""
+  fi
+
+  if [[ -z "$user_input" ]]; then
+    user_input="$default_value"
+  fi
+  eval "$result_var=\"$user_input\""
+}
+
+# Configuration variables
+TARGET_APP=""
 IS_RELEASE=false
+MODE_SPECIFIED=false
+UPDATE_TECHOPTIONS=""
 NO_PUSH=true           # Default: safe local build only (no remote push)
+PUSH_SPECIFIED=false
 AUTO_BUMP=false        # Default: keep current version for local test builds
+NON_INTERACTIVE=false
+DRY_RUN=false
 CUSTOM_VERSION=""
 CUSTOM_NOTES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --dry-run|dry-run)
+      DRY_RUN=true
+      shift
+      ;;
     kids|--kids|kid|--kid)
       TARGET_APP="kids"
       shift
@@ -54,8 +89,27 @@ while [[ $# -gt 0 ]]; do
       ;;
     release|--release|realese|--realese|relase|--relase)
       IS_RELEASE=true
+      MODE_SPECIFIED=true
       AUTO_BUMP=true
       NO_PUSH=false
+      UPDATE_TECHOPTIONS="true"
+      shift
+      ;;
+    build|--build|build-only|--build-only)
+      IS_RELEASE=false
+      MODE_SPECIFIED=true
+      AUTO_BUMP=false
+      NO_PUSH=true
+      UPDATE_TECHOPTIONS="false"
+      shift
+      ;;
+    stage|--stage|techoptions|--techoptions|--update-techoptions)
+      UPDATE_TECHOPTIONS="true"
+      MODE_SPECIFIED=true
+      shift
+      ;;
+    --no-stage|--no-techoptions)
+      UPDATE_TECHOPTIONS="false"
       shift
       ;;
     auto|--auto|auth|--auth)
@@ -64,10 +118,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --push)
       NO_PUSH=false
+      PUSH_SPECIFIED=true
+      UPDATE_TECHOPTIONS="true"
+      MODE_SPECIFIED=true
       shift
       ;;
     --no-push|no-push)
       NO_PUSH=true
+      PUSH_SPECIFIED=true
+      UPDATE_TECHOPTIONS="true"
+      MODE_SPECIFIED=true
       shift
       ;;
     --bump|bump)
@@ -76,6 +136,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-bump|no-bump)
       AUTO_BUMP=false
+      shift
+      ;;
+    -y|--yes|--non-interactive|--batch)
+      NON_INTERACTIVE=true
       shift
       ;;
     -v|--version)
@@ -97,24 +161,37 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      echo "Usage: $0 [all|kids|parents] [release] [--auto] [--version <X.Y.Z>] [--notes <text>] [--no-push]"
+      echo "Usage: $SCRIPT_NAME [all|kids|parents] [build|release] [options]"
       echo ""
       echo "Modes:"
-      echo "  1. Test Build (default - local only):"
-      echo "     $0                             # Builds both APKs locally (no version bump, no push)"
-      echo "     $0 kids                        # Builds only Kids APK locally"
-      echo "     $0 parents                     # Builds only Parents APK locally"
+      echo "  1. Interactive (default when run in terminal without mode):"
+      echo "     $SCRIPT_NAME                   # Choose target, build mode, and whether to push staged APKs"
       echo ""
-      echo "  2. Official Release (auto-versioning & push):"
-      echo "     $0 release --auto              # Auto-increments versions, stamps date, updates version.json & pushes"
-      echo "     $0 release                     # Same as above"
-      echo "     $0 kids release                # Release only Kids app with auto-bump & push"
-      echo "     $0 release --no-push           # Auto-bump and update version.json locally without git push"
+      echo "  2. Build Only (local compile, keeps TechOptions untouched, no push):"
+      echo "     $SCRIPT_NAME build             # Builds all APKs locally"
+      echo "     $SCRIPT_NAME kids build        # Builds only Kids APK locally"
+      echo "     $SCRIPT_NAME parents build     # Builds only Parents APK locally"
+      echo ""
+      echo "  3. Build & Stage to TechOptions (defaults to local staging):"
+      echo "     $SCRIPT_NAME --stage           # Builds and stages all APKs, offers push in a terminal"
+      echo "     $SCRIPT_NAME kids --no-push    # Builds Kids APK and copies to TechOptions locally"
+      echo ""
+      echo "  4. Official Release (auto-versioning & push to TechOptions):"
+      echo "     $SCRIPT_NAME release           # Auto-increments versions, stages to TechOptions & pushes"
+      echo "     $SCRIPT_NAME kids release      # Release only Kids app with auto-bump & push"
+      echo "     $SCRIPT_NAME release --no-push # Auto-bump and stage to TechOptions locally without git push"
       echo ""
       echo "Options:"
+      echo "  --build, build-only               Build APKs locally without updating TechOptions"
+      echo "  --release                         Release mode (bumps version, updates TechOptions, pushes)"
+      echo "  --stage, --techoptions            Copy built APKs to TechOptions repository"
+      echo "  --no-stage, --no-techoptions      Do not touch TechOptions repository"
       echo "  --version <X.Y.Z>                 Explicitly set versionName (auto-increments versionCode)"
       echo "  --notes <description>             Custom notes for update popup (auto-stamped with current date)"
+      echo "  --push                            Push release commit to TechOptions remote (origin/angan)"
       echo "  --no-push                         Build APKs and update TechOptions locally without git push"
+      echo "  --bump / --no-bump                Force enable or disable version auto-increment"
+      echo "  -y, --non-interactive             Skip interactive prompts and use defaults"
       exit 0
       ;;
     *)
@@ -122,6 +199,121 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+IS_TTY=false
+if [[ "$NON_INTERACTIVE" != "true" ]] && { [[ -t 0 ]] || [[ -r /dev/tty ]]; }; then
+  IS_TTY=true
+fi
+
+# ------------------------------------------------------------------------------
+# Interactive Prompts (when options were not explicitly provided on CLI)
+# ------------------------------------------------------------------------------
+# 1. Target application
+if [[ -z "$TARGET_APP" ]]; then
+  if $IS_TTY; then
+    echo "=========================================================="
+    echo " Angan Multi-App Build & Release"
+    echo "=========================================================="
+    echo ""
+    echo "Select target application:"
+    echo "  1) All (Kids Android + Parents Flutter) [Default]"
+    echo "  2) Kids Android only"
+    echo "  3) Parents Flutter only"
+    ask_prompt "Enter choice [1-3] (Default: 1): " "1" APP_CHOICE
+    case "$APP_CHOICE" in
+      2|kids|kid)
+        TARGET_APP="kids"
+        ;;
+      3|parents|parent)
+        TARGET_APP="parents"
+        ;;
+      *)
+        TARGET_APP="all"
+        ;;
+    esac
+    echo ""
+  else
+    TARGET_APP="all"
+  fi
+fi
+
+# 2. Action: Build only vs Release also
+if ! $MODE_SPECIFIED; then
+  if $IS_TTY; then
+    echo "Select action:"
+    echo "  1) Build with current version (Optional staging and push) [Default]"
+    echo "  2) Release (Auto-bump version, stage to TechOptions, optional push)"
+    ask_prompt "Enter choice [1-2] (Default: 1): " "1" MODE_CHOICE
+    case "$MODE_CHOICE" in
+      2|release|r|R)
+        IS_RELEASE=true
+        AUTO_BUMP=true
+        UPDATE_TECHOPTIONS="true"
+        NO_PUSH=false
+        ;;
+      *)
+        IS_RELEASE=false
+        AUTO_BUMP=false
+        NO_PUSH=true
+        ;;
+    esac
+    echo ""
+  else
+    IS_RELEASE=false
+    AUTO_BUMP=false
+    NO_PUSH=true
+  fi
+fi
+
+# 3. TechOptions staging & push confirmation
+if $IS_RELEASE; then
+  UPDATE_TECHOPTIONS="true"
+else
+  if [[ -z "$UPDATE_TECHOPTIONS" ]]; then
+    if $IS_TTY; then
+      ask_prompt "Stage APKs in TechOptions? [y/N] (Default: n): " "n" STAGE_CHOICE
+      case "$STAGE_CHOICE" in
+        y|Y|yes|YES)
+          UPDATE_TECHOPTIONS="true"
+          ;;
+        *)
+          UPDATE_TECHOPTIONS="false"
+          ;;
+      esac
+      echo ""
+    else
+      UPDATE_TECHOPTIONS="false"
+    fi
+  fi
+fi
+
+if $IS_TTY && [[ "$UPDATE_TECHOPTIONS" == "true" ]] && ! $PUSH_SPECIFIED; then
+  if $IS_RELEASE; then
+    ask_prompt "Push release commit to TechOptions remote (origin/angan)? [Y/n] (Default: y): " "y" PUSH_CHOICE
+  else
+    ask_prompt "Push staged APKs to TechOptions remote (origin/angan)? [y/N] (Default: n): " "n" PUSH_CHOICE
+  fi
+  case "${PUSH_CHOICE,,}" in
+    y|yes) NO_PUSH=false ;;
+    *) NO_PUSH=true ;;
+  esac
+  echo ""
+fi
+
+# Prompt for custom release notes if not provided
+if $IS_RELEASE && $IS_TTY && [[ -z "$CUSTOM_NOTES" ]]; then
+  ask_prompt "Custom release notes (Optional - press Enter to use default): " "" NOTES_INPUT
+  if [[ -n "$NOTES_INPUT" ]]; then
+    CUSTOM_NOTES="$NOTES_INPUT"
+  fi
+  echo ""
+fi
+
+if [[ "$UPDATE_TECHOPTIONS" == "true" ]]; then
+  SHOULD_UPDATE_TECHOPTIONS=true
+else
+  SHOULD_UPDATE_TECHOPTIONS=false
+fi
 
 # Current date string for automated release notes
 PRETTY_DATE=$(TZ="Asia/Dhaka" date +"%d %b %Y, %I:%M %p BST" 2>/dev/null || date +"%d %b %Y, %I:%M %p")
@@ -145,9 +337,13 @@ if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "kids" ]]; then
       NEW_KIDS_NAME="${KM_1}.${KM_2}.$((KM_3 + 1))"
     fi
 
-    sed -i "s/versionCode = [0-9]\+/versionCode = $NEW_KIDS_CODE/" "$KIDS_APP_DIR/app/build.gradle.kts"
-    sed -i "s/versionName = \"[^\"]\+\"/versionName = \"$NEW_KIDS_NAME\"/" "$KIDS_APP_DIR/app/build.gradle.kts"
-    echo "✓ Auto-bumped Kids Android: v${CURR_KIDS_NAME}+${CURR_KIDS_CODE} -> v${NEW_KIDS_NAME}+${NEW_KIDS_CODE}"
+    if $DRY_RUN; then
+      echo "✓ [Dry-run] Would bump Kids Android: v${CURR_KIDS_NAME}+${CURR_KIDS_CODE} -> v${NEW_KIDS_NAME}+${NEW_KIDS_CODE}"
+    else
+      sed -i "s/versionCode = [0-9]\+/versionCode = $NEW_KIDS_CODE/" "$KIDS_APP_DIR/app/build.gradle.kts"
+      sed -i "s/versionName = \"[^\"]\+\"/versionName = \"$NEW_KIDS_NAME\"/" "$KIDS_APP_DIR/app/build.gradle.kts"
+      echo "✓ Auto-bumped Kids Android: v${CURR_KIDS_NAME}+${CURR_KIDS_CODE} -> v${NEW_KIDS_NAME}+${NEW_KIDS_CODE}"
+    fi
   fi
 fi
 
@@ -169,8 +365,12 @@ if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "parents" ]]; then
       NEW_P_NAME="${PM_1}.${PM_2}.$((PM_3 + 1))"
     fi
 
-    sed -i "s/^version: .*/version: ${NEW_P_NAME}+${NEW_P_CODE}/" "$PARENTS_APP_DIR/pubspec.yaml"
-    echo "✓ Auto-bumped Parents Flutter: v${CURR_P_NAME}+${CURR_P_CODE} -> v${NEW_P_NAME}+${NEW_P_CODE}"
+    if $DRY_RUN; then
+      echo "✓ [Dry-run] Would bump Parents Flutter: v${CURR_P_NAME}+${CURR_P_CODE} -> v${NEW_P_NAME}+${NEW_P_CODE}"
+    else
+      sed -i "s/^version: .*/version: ${NEW_P_NAME}+${NEW_P_CODE}/" "$PARENTS_APP_DIR/pubspec.yaml"
+      echo "✓ Auto-bumped Parents Flutter: v${CURR_P_NAME}+${CURR_P_CODE} -> v${NEW_P_NAME}+${NEW_P_CODE}"
+    fi
   fi
 fi
 
@@ -195,26 +395,72 @@ WEB_BASE_URL="${WEB_BASE_URL:-https://parent.gentliva.com}"
 echo "=========================================================="
 if $IS_RELEASE; then
   echo " Angan Multi-App Official Release (Auto-Deploy)"
+elif $SHOULD_UPDATE_TECHOPTIONS; then
+  echo " Angan Multi-App Build & TechOptions Staging"
 else
-  echo " Angan Multi-App Test Build (Local Only)"
+  echo " Angan Multi-App Build (Local Only)"
 fi
 echo "=========================================================="
-echo "Workspace Root   : $WORKSPACE_ROOT"
-echo "Target App(s)    : $TARGET_APP"
-echo "Mode             : $(if $IS_RELEASE; then echo "Official Release (Auto)"; else echo "Local Test Build (No Push)"; fi)"
-echo "Auto-Bump Version: $(if $AUTO_BUMP; then echo "Enabled (+1)"; else echo "Disabled (Keep current)"; fi)"
-echo "Git Push         : $(if $NO_PUSH; then echo "Disabled (Local only)"; else echo "Enabled (origin/angan)"; fi)"
-echo "Gateway URL      : $GATEWAY_URL"
-echo "Web Base URL     : $WEB_BASE_URL"
+echo "Workspace Root    : $WORKSPACE_ROOT"
+echo "Target App(s)     : $TARGET_APP"
+echo "Mode              : $(if $IS_RELEASE; then echo "Official Release"; elif $SHOULD_UPDATE_TECHOPTIONS; then echo "Build & Stage to TechOptions"; else echo "Local Build Only"; fi)"
+echo "Auto-Bump Version : $(if $AUTO_BUMP; then echo "Enabled (+1)"; else echo "Disabled (Keep current)"; fi)"
+echo "Update TechOptions: $(if $SHOULD_UPDATE_TECHOPTIONS; then echo "Yes ($TECHOPTIONS_DIR)"; else echo "No (TechOptions untouched)"; fi)"
+echo "Git Push          : $(if $NO_PUSH; then echo "Disabled (Local only)"; else echo "Enabled (origin/angan)"; fi)"
+echo "Gateway URL       : $GATEWAY_URL"
+echo "Web Base URL      : $WEB_BASE_URL"
 echo "=========================================================="
 
-mkdir -p "$TECHOPTIONS_DIR"
+if $SHOULD_UPDATE_TECHOPTIONS; then
+  mkdir -p "$TECHOPTIONS_DIR"
+fi
+
+if $DRY_RUN; then
+  echo ""
+  echo ">>> [DRY-RUN] Validation complete. Exiting without compiling APKs or modifying repositories."
+  exit 0
+fi
+
+# Inspect the binary itself; source version files can disagree with cached build output.
+command -v python3 >/dev/null || { echo "Error: python3 is required for release validation." >&2; exit 1; }
+AAPT_BIN="${AAPT_BIN:-}"
+if [[ -z "$AAPT_BIN" ]]; then
+  AAPT_BIN="$(command -v aapt || true)"
+fi
+if [[ -z "$AAPT_BIN" ]]; then
+  for sdk_root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Android/Sdk" /opt/android-sdk-linux /usr/lib/android-sdk; do
+    [[ -d "$sdk_root/build-tools" ]] || continue
+    AAPT_BIN="$(find "$sdk_root/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+    [[ -n "$AAPT_BIN" ]] && break
+  done
+fi
+if [[ ! -x "$AAPT_BIN" ]]; then
+  echo "Error: Android SDK aapt is required to verify APK versions. Set AAPT_BIN or ANDROID_HOME." >&2
+  exit 1
+fi
+
+verify_apk_version() {
+  python3 - "$AAPT_BIN" "$1" "$2" "$3" <<'PY_VERIFY'
+import re
+import subprocess
+import sys
+
+aapt, apk, expected_name, expected_code = sys.argv[1:]
+badging = subprocess.check_output([aapt, "dump", "badging", apk], text=True)
+match = re.search(r"^package: .*versionCode='([0-9]+)' versionName='([^']+)'", badging, re.M)
+if not match or (match[2], match[1]) != (expected_name, expected_code):
+    actual = f"{match[2]}+{match[1]}" if match else "unknown"
+    sys.exit(f"Error: {apk} contains {actual}; expected {expected_name}+{expected_code}. Refusing to stage stale APK.")
+print(f"✓ Verified APK version: {expected_name}+{expected_code}")
+PY_VERIFY
+}
 
 # ------------------------------------------------------------------------------
 # STEP 1: Build Angan Kids Android Release APK
 # ------------------------------------------------------------------------------
 KIDS_DEST_APK="$TECHOPTIONS_DIR/angan-kids.apk"
 KIDS_DEST_UNIVERSAL="$TECHOPTIONS_DIR/angan-kids-universal.apk"
+KIDS_BUILT_APK=""
 
 if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "kids" ]]; then
   echo ""
@@ -287,23 +533,35 @@ if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "kids" ]]; then
   KIDS_STANDARD_APK="$KIDS_OUT_DIR/app-release.apk"
 
   if [[ -f "$KIDS_ARM64_APK" ]]; then
-    cp "$KIDS_ARM64_APK" "$KIDS_DEST_APK"
-    echo "✓ Deployed Primary Kids APK (arm64-v8a, slim): $KIDS_DEST_APK ($(du -h "$KIDS_DEST_APK" | cut -f1))"
+    KIDS_BUILT_APK="$KIDS_ARM64_APK"
   elif [[ -f "$KIDS_STANDARD_APK" ]]; then
-    cp "$KIDS_STANDARD_APK" "$KIDS_DEST_APK"
-    echo "✓ Deployed Primary Kids APK: $KIDS_DEST_APK ($(du -h "$KIDS_DEST_APK" | cut -f1))"
+    KIDS_BUILT_APK="$KIDS_STANDARD_APK"
   elif [[ -f "$KIDS_UNIVERSAL_APK" ]]; then
-    cp "$KIDS_UNIVERSAL_APK" "$KIDS_DEST_APK"
-    echo "✓ Deployed Primary Kids APK: $KIDS_DEST_APK ($(du -h "$KIDS_DEST_APK" | cut -f1))"
+    KIDS_BUILT_APK="$KIDS_UNIVERSAL_APK"
   else
     echo "Error: No release APK found in $KIDS_OUT_DIR!" >&2
     exit 1
   fi
 
-  # Deploy universal fallback if generated
+  EXPECTED_KIDS_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' "$KIDS_APP_DIR/app/build.gradle.kts")
+  EXPECTED_KIDS_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' "$KIDS_APP_DIR/app/build.gradle.kts")
+  verify_apk_version "$KIDS_BUILT_APK" "$EXPECTED_KIDS_NAME" "$EXPECTED_KIDS_CODE"
   if [[ -f "$KIDS_UNIVERSAL_APK" ]]; then
-    cp "$KIDS_UNIVERSAL_APK" "$KIDS_DEST_UNIVERSAL"
-    echo "✓ Deployed Universal Kids APK: $KIDS_DEST_UNIVERSAL ($(du -h "$KIDS_DEST_UNIVERSAL" | cut -f1))"
+    verify_apk_version "$KIDS_UNIVERSAL_APK" "$EXPECTED_KIDS_NAME" "$EXPECTED_KIDS_CODE"
+  fi
+
+  if $SHOULD_UPDATE_TECHOPTIONS; then
+    cp "$KIDS_BUILT_APK" "$KIDS_DEST_APK"
+    echo "✓ Staged Primary Kids APK to TechOptions: $KIDS_DEST_APK ($(du -h "$KIDS_DEST_APK" | cut -f1))"
+    if [[ -f "$KIDS_UNIVERSAL_APK" ]]; then
+      cp "$KIDS_UNIVERSAL_APK" "$KIDS_DEST_UNIVERSAL"
+      echo "✓ Staged Universal Kids APK to TechOptions: $KIDS_DEST_UNIVERSAL ($(du -h "$KIDS_DEST_UNIVERSAL" | cut -f1))"
+    fi
+  else
+    echo "✓ Built Primary Kids APK: $KIDS_BUILT_APK ($(du -h "$KIDS_BUILT_APK" | cut -f1))"
+    if [[ -f "$KIDS_UNIVERSAL_APK" ]]; then
+      echo "✓ Built Universal Kids APK: $KIDS_UNIVERSAL_APK ($(du -h "$KIDS_UNIVERSAL_APK" | cut -f1))"
+    fi
   fi
 fi
 
@@ -311,6 +569,7 @@ fi
 # STEP 2: Build Angan Parents (Flutter) Release APK via Docker
 # ------------------------------------------------------------------------------
 PARENTS_DEST_APK="$TECHOPTIONS_DIR/angan-parents.apk"
+PARENTS_SRC_APK=""
 
 if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "parents" ]]; then
   echo ""
@@ -326,18 +585,27 @@ if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "parents" ]]; then
     echo "Error: Parents Release APK was not found at $PARENTS_SRC_APK!" >&2
     exit 1
   fi
-  cp "$PARENTS_SRC_APK" "$PARENTS_DEST_APK"
-  echo "✓ Deployed Parents APK: $PARENTS_DEST_APK ($(du -h "$PARENTS_DEST_APK" | cut -f1))"
+
+  EXPECTED_PARENTS_VERSION=$(awk '/^version:/ {print $2}' "$PARENTS_APP_DIR/pubspec.yaml")
+  verify_apk_version "$PARENTS_SRC_APK" "${EXPECTED_PARENTS_VERSION%%+*}" "${EXPECTED_PARENTS_VERSION##*+}"
+
+  if $SHOULD_UPDATE_TECHOPTIONS; then
+    cp "$PARENTS_SRC_APK" "$PARENTS_DEST_APK"
+    echo "✓ Staged Parents APK to TechOptions: $PARENTS_DEST_APK ($(du -h "$PARENTS_DEST_APK" | cut -f1))"
+  else
+    echo "✓ Built Parents APK: $PARENTS_SRC_APK ($(du -h "$PARENTS_SRC_APK" | cut -f1))"
+  fi
 fi
 
-# Remove obsolete files
-rm -f "$TECHOPTIONS_DIR/app-release.apk"
+# ------------------------------------------------------------------------------
+# STEP 3: TechOptions Metadata & Scripts Sync (Optional based on mode/choice)
+# ------------------------------------------------------------------------------
+if $SHOULD_UPDATE_TECHOPTIONS; then
+  # Remove obsolete files
+  rm -f "$TECHOPTIONS_DIR/app-release.apk"
 
-# ------------------------------------------------------------------------------
-# STEP 3: Generate TechOptions/README.md & TechOptions/version.json
-# ------------------------------------------------------------------------------
-TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S UTC')"
-cat <<EOF > "$TECHOPTIONS_DIR/README.md"
+  TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S UTC')"
+  cat <<EOF > "$TECHOPTIONS_DIR/README.md"
 # Angan Application Release Downloads
 
 Updated: **$TIMESTAMP**
@@ -355,105 +623,143 @@ $(sha256sum "$TECHOPTIONS_DIR"/*.apk 2>/dev/null | awk '{print $1 "  " $2}' | se
 \`\`\`
 EOF
 
-# Extract version metadata for version.json (OTA updates)
-KIDS_VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' "$KIDS_APP_DIR/app/build.gradle.kts" 2>/dev/null || echo "1")
-KIDS_VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' "$KIDS_APP_DIR/app/build.gradle.kts" 2>/dev/null || echo "1.0")
+  # Derive OTA metadata from staged APKs, including apps not built in this run.
+  # A checksum-specific URL avoids reusing a cached response from the previous release.
+  python3 - "$AAPT_BIN" "$TECHOPTIONS_DIR" "$TARGET_APP" "$CUSTOM_NOTES" "$PRETTY_DATE" <<'PY_METADATA'
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
 
-PARENTS_VERSION_LINE=$(grep '^version:' "$PARENTS_APP_DIR/pubspec.yaml" 2>/dev/null | awk '{print $2}' || echo "0.1.0+1")
-PARENTS_VERSION_NAME=$(echo "$PARENTS_VERSION_LINE" | cut -d'+' -f1)
-PARENTS_VERSION_CODE=$(echo "$PARENTS_VERSION_LINE" | cut -d'+' -f2)
-[ -z "$PARENTS_VERSION_CODE" ] && PARENTS_VERSION_CODE="1"
-
-KIDS_SHA=$(sha256sum "$KIDS_DEST_APK" 2>/dev/null | awk '{print $1}' || echo "")
-PARENTS_SHA=$(sha256sum "$PARENTS_DEST_APK" 2>/dev/null | awk '{print $1}' || echo "")
-
-if [[ -n "$CUSTOM_NOTES" ]]; then
-  KIDS_NOTES="$CUSTOM_NOTES (Released: $PRETTY_DATE)"
-  PARENTS_NOTES="$CUSTOM_NOTES (Released: $PRETTY_DATE)"
-else
-  KIDS_NOTES="Release update ($PRETTY_DATE) with stability and performance improvements."
-  PARENTS_NOTES="Release update ($PRETTY_DATE) with stability and performance improvements."
-fi
-
-cat <<EOF > "$TECHOPTIONS_DIR/version.json"
-{
-  "kids": {
-    "versionCode": ${KIDS_VERSION_CODE:-1},
-    "versionName": "${KIDS_VERSION_NAME:-1.0}",
-    "apkUrl": "https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids.apk",
-    "sha256": "$KIDS_SHA",
-    "releaseNotes": "$KIDS_NOTES"
-  },
-  "parents": {
-    "versionCode": ${PARENTS_VERSION_CODE:-1},
-    "versionName": "${PARENTS_VERSION_NAME:-0.1.0}",
-    "apkUrl": "https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-parents.apk",
-    "sha256": "$PARENTS_SHA",
-    "releaseNotes": "$PARENTS_NOTES"
-  }
-}
-EOF
-echo "✓ Generated TechOptions/version.json (Kids: v${KIDS_VERSION_NAME}+${KIDS_VERSION_CODE}, Parents: v${PARENTS_VERSION_NAME}+${PARENTS_VERSION_CODE})"
-
-# Mirror the release script to TechOptions repository
-cp -f "$SCRIPT_DIR/build_release_apk.sh" "$TECHOPTIONS_DIR/build_release_apk.sh"
-chmod +x "$TECHOPTIONS_DIR/build_release_apk.sh"
-
-# ------------------------------------------------------------------------------
-# STEP 4: Deploy to TechOptions Git (Clean Single Commit, No Git History Bloat)
-# ------------------------------------------------------------------------------
-if ! $NO_PUSH; then
-  echo ""
-  echo "=========================================================="
-  echo " TECHOPTIONS REPOSITORY SYNC"
-  echo "=========================================================="
-  if [[ -d "$TECHOPTIONS_DIR/.git" ]]; then
-    (
-      cd "$TECHOPTIONS_DIR"
-      git checkout -B angan
-      git add angan-kids.apk angan-parents.apk README.md version.json build_release_apk.sh
-      if [[ -f "$KIDS_DEST_UNIVERSAL" ]]; then
-        git add angan-kids-universal.apk
-      fi
-      git rm -f app-release.apk 2>/dev/null || true
-
-      COMMIT_MSG="Release APKs (Target: $TARGET_APP): $TIMESTAMP"
-
-      # Amend the single commit so git history NEVER grows or tracks old binary versions
-      if git rev-parse HEAD >/dev/null 2>&1; then
-        git commit --amend -m "$COMMIT_MSG"
-      else
-        git commit -m "$COMMIT_MSG"
-      fi
-
-      echo "==> Pushing clean release commit to origin/angan (force update)..."
-      git push --force origin angan
-      echo "✓ Pushed to https://github.com/nasim0x1/TechOptions/tree/angan"
+aapt, directory, target, notes, date = sys.argv[1:]
+root = Path(directory)
+manifest = root / "version.json"
+metadata = json.loads(manifest.read_text()) if manifest.exists() else {}
+for app in ("kids", "parents"):
+    apk = root / f"angan-{app}.apk"
+    if not apk.exists():
+        metadata.pop(app, None)
+        continue
+    badging = subprocess.check_output([aapt, "dump", "badging", str(apk)], text=True)
+    match = re.search(r"^package: .*versionCode='([0-9]+)' versionName='([^']+)'", badging, re.M)
+    if not match:
+        sys.exit(f"Error: Cannot read version from {apk}")
+    sha = hashlib.sha256(apk.read_bytes()).hexdigest()
+    entry = metadata.setdefault(app, {})
+    entry.update(
+        versionCode=int(match[1]), versionName=match[2], sha256=sha,
+        apkUrl=f"https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/{apk.name}?sha256={sha}",
     )
-  else
-    echo "Warning: TechOptions is not a git repository. APKs copied but not pushed."
+    if target in ("all", app):
+        entry["releaseNotes"] = (f"{notes} (Released: {date})" if notes else
+            f"Release update ({date}) with stability and performance improvements.")
+    print(f"✓ OTA metadata: {app} v{match[2]}+{match[1]} (APK verified)")
+temporary = manifest.with_suffix(".json.tmp")
+temporary.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n")
+temporary.replace(manifest)
+PY_METADATA
+
+  # Mirror the release script to TechOptions repository
+  if [[ ! "$SCRIPT_DIR/build_release_apk.sh" -ef "$TECHOPTIONS_DIR/build_release_apk.sh" ]]; then
+    cp -f "$SCRIPT_DIR/build_release_apk.sh" "$TECHOPTIONS_DIR/build_release_apk.sh"
   fi
-else
-  echo ""
-  echo "==> Skipping Git push (--no-push specified)."
+  chmod +x "$TECHOPTIONS_DIR/build_release_apk.sh"
+
+  # ------------------------------------------------------------------------------
+  # STEP 4: Deploy to TechOptions Git (Clean Single Commit, No Git History Bloat)
+  # ------------------------------------------------------------------------------
+  if ! $NO_PUSH; then
+    echo ""
+    echo "=========================================================="
+    echo " TECHOPTIONS REPOSITORY SYNC"
+    echo "=========================================================="
+    if [[ -d "$TECHOPTIONS_DIR/.git" ]]; then
+      (
+        cd "$TECHOPTIONS_DIR"
+        git checkout -B angan
+        git add angan-kids.apk angan-parents.apk README.md version.json build_release_apk.sh
+        if [[ -f "$KIDS_DEST_UNIVERSAL" ]]; then
+          git add angan-kids-universal.apk
+        fi
+        git rm -f app-release.apk 2>/dev/null || true
+
+        COMMIT_MSG="Release APKs (Target: $TARGET_APP): $TIMESTAMP"
+
+        # Amend the single commit so git history NEVER grows or tracks old binary versions
+        if git rev-parse HEAD >/dev/null 2>&1; then
+          git commit --amend -m "$COMMIT_MSG"
+        else
+          git commit -m "$COMMIT_MSG"
+        fi
+
+        echo "==> Pushing clean release commit to origin/angan (force update)..."
+        git push --force origin angan
+        echo "✓ Pushed to https://github.com/nasim0x1/TechOptions/tree/angan"
+      )
+    else
+      echo "Warning: TechOptions is not a git repository. APKs copied but not pushed."
+    fi
+  else
+    echo ""
+    echo "==> Skipping Git push (--no-push or local staging specified)."
+  fi
 fi
 
 echo ""
 echo "=========================================================="
-echo " BUILD & DEPLOY COMPLETE!"
+if $SHOULD_UPDATE_TECHOPTIONS; then
+  if ! $NO_PUSH; then
+    echo " BUILD & RELEASE COMPLETE (Pushed to TechOptions)!"
+  else
+    echo " BUILD & TECHOPTIONS STAGING COMPLETE (Local Only)!"
+  fi
+else
+  echo " BUILD COMPLETE (Local Build Only)!"
+fi
 echo "=========================================================="
-if [[ -f "$KIDS_DEST_APK" ]]; then
-  echo "1. Angan Kids APK (arm64, slim): $KIDS_DEST_APK ($(du -h "$KIDS_DEST_APK" | cut -f1))"
-  echo "   Download Link               : https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids.apk"
-  echo "   SHA-256                     : $(sha256sum "$KIDS_DEST_APK" | awk '{print $1}')"
+
+if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "kids" ]]; then
+  if $SHOULD_UPDATE_TECHOPTIONS; then
+    if [[ -f "$KIDS_DEST_APK" ]]; then
+      echo "1. Angan Kids APK (arm64, slim): $KIDS_DEST_APK ($(du -h "$KIDS_DEST_APK" | cut -f1))"
+      echo "   Download Link               : https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids.apk"
+      echo "   SHA-256                     : $(sha256sum "$KIDS_DEST_APK" | awk '{print $1}')"
+    fi
+    if [[ -f "$KIDS_DEST_UNIVERSAL" ]]; then
+      echo "2. Angan Kids Universal APK    : $KIDS_DEST_UNIVERSAL ($(du -h "$KIDS_DEST_UNIVERSAL" | cut -f1))"
+      echo "   Download Link               : https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids-universal.apk"
+    fi
+  else
+    if [[ -n "${KIDS_BUILT_APK:-}" && -f "$KIDS_BUILT_APK" ]]; then
+      echo "1. Angan Kids APK              : $KIDS_BUILT_APK ($(du -h "$KIDS_BUILT_APK" | cut -f1))"
+      echo "   SHA-256                     : $(sha256sum "$KIDS_BUILT_APK" | awk '{print $1}')"
+    fi
+    if [[ -f "$KIDS_UNIVERSAL_APK" ]]; then
+      echo "2. Angan Kids Universal APK    : $KIDS_UNIVERSAL_APK ($(du -h "$KIDS_UNIVERSAL_APK" | cut -f1))"
+    fi
+  fi
 fi
-if [[ -f "$KIDS_DEST_UNIVERSAL" ]]; then
-  echo "2. Angan Kids Universal APK    : $KIDS_DEST_UNIVERSAL ($(du -h "$KIDS_DEST_UNIVERSAL" | cut -f1))"
-  echo "   Download Link               : https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids-universal.apk"
+
+if [[ "$TARGET_APP" == "all" || "$TARGET_APP" == "parents" ]]; then
+  if $SHOULD_UPDATE_TECHOPTIONS; then
+    if [[ -f "$PARENTS_DEST_APK" ]]; then
+      echo "3. Angan Parents APK           : $PARENTS_DEST_APK ($(du -h "$PARENTS_DEST_APK" | cut -f1))"
+      echo "   Download Link               : https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-parents.apk"
+      echo "   SHA-256                     : $(sha256sum "$PARENTS_DEST_APK" | awk '{print $1}')"
+    fi
+  else
+    if [[ -n "${PARENTS_SRC_APK:-}" && -f "$PARENTS_SRC_APK" ]]; then
+      echo "3. Angan Parents APK           : $PARENTS_SRC_APK ($(du -h "$PARENTS_SRC_APK" | cut -f1))"
+      echo "   SHA-256                     : $(sha256sum "$PARENTS_SRC_APK" | awk '{print $1}')"
+    fi
+  fi
 fi
-if [[ -f "$PARENTS_DEST_APK" ]]; then
-  echo "3. Angan Parents APK           : $PARENTS_DEST_APK ($(du -h "$PARENTS_DEST_APK" | cut -f1))"
-  echo "   Download Link               : https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-parents.apk"
-  echo "   SHA-256                     : $(sha256sum "$PARENTS_DEST_APK" | awk '{print $1}')"
+
+if ! $SHOULD_UPDATE_TECHOPTIONS; then
+  echo ""
+  echo "Note: TechOptions repository was not modified."
+  echo "      Run with 'release' or enable TechOptions staging to update TechOptions."
 fi
 echo "=========================================================="

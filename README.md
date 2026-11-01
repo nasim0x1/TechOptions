@@ -1,6 +1,6 @@
 # Angan Application Release Downloads
 
-Updated: **2026-10-29 22:59:43 UTC**
+Updated: **2026-11-24 18:36:08 UTC**
 Gateway Environment: `https://gentliva.com/`
 
 | Application | Target Architecture | File Size | Direct Download Link |
@@ -11,7 +11,7 @@ Gateway Environment: `https://gentliva.com/`
 
 ### SHA-256 Checksums
 ```text
-16051a848b3406873b1553ca30090eec611f4bf20a0a03104809456a4a88a3ae  angan-kids.apk
-8caf9fd634e7e03027e9b6f3302feff72aab47a38b8980078d9e22e0984b0dc7  angan-kids-universal.apk
-4852c012c2bc801bcaa4ea6c1b237adcf446e9f421f41c083fa0a14ea1d36a80  angan-parents.apk
+2e8e176ef48336d3f543f84e2fc617ef36e794544c616208015c267d5c75e72a  angan-kids.apk
+4146cb89f7995bdf32b47ffcec940b024f43dd49bd97cfbdb650e6b6d6a6e8e7  angan-kids-universal.apk
+5bfaaba108f5319329836cc0eb3acd60c0fd8fd72438c69ad99126ce401b3f7a  angan-parents.apk
 ```
