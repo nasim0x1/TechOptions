@@ -1,16 +1,16 @@
 {
   "kids": {
-    "versionCode": 22,
-    "versionName": "1.0.21",
-    "apkUrl": "https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids.apk?sha256=2e8e176ef48336d3f543f84e2fc617ef36e794544c616208015c267d5c75e72a",
-    "sha256": "2e8e176ef48336d3f543f84e2fc617ef36e794544c616208015c267d5c75e72a",
-    "releaseNotes": "Release update (24 Nov 2026, 06:31 PM BST) with stability and performance improvements."
+    "versionCode": 24,
+    "versionName": "1.0.23",
+    "apkUrl": "https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-kids.apk?sha256=05a337924f9c0fc48e1db5a7acb8bef83e926dfa85bc49bf4c4c11e3719f1801",
+    "sha256": "05a337924f9c0fc48e1db5a7acb8bef83e926dfa85bc49bf4c4c11e3719f1801",
+    "releaseNotes": "Release update (26 Nov 2026, 09:34 AM BST) with stability and performance improvements."
   },
   "parents": {
-    "versionCode": 25,
-    "versionName": "0.1.24",
-    "apkUrl": "https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-parents.apk?sha256=5bfaaba108f5319329836cc0eb3acd60c0fd8fd72438c69ad99126ce401b3f7a",
-    "sha256": "5bfaaba108f5319329836cc0eb3acd60c0fd8fd72438c69ad99126ce401b3f7a",
-    "releaseNotes": "Release update (24 Nov 2026, 06:31 PM BST) with stability and performance improvements."
+    "versionCode": 27,
+    "versionName": "0.1.26",
+    "apkUrl": "https://raw.githubusercontent.com/nasim0x1/TechOptions/refs/heads/angan/angan-parents.apk?sha256=2bd86e1dc05776e09d8f55f8d0b1e1446bba041bd51905ae996732b3feba76ed",
+    "sha256": "2bd86e1dc05776e09d8f55f8d0b1e1446bba041bd51905ae996732b3feba76ed",
+    "releaseNotes": "Release update (26 Nov 2026, 09:34 AM BST) with stability and performance improvements."
   }
 }
